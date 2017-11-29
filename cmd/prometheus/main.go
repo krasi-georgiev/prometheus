@@ -283,6 +283,7 @@ func main() {
 		discoveryManager.ApplyConfig,
 		webHandler.ApplyConfig,
 		notifier.ApplyConfig,
+		scrapeManager.ApplyConfig,
 		func(cfg *config.Config) error {
 			// Get all rule files matching the configuration oaths.
 			var files []string
