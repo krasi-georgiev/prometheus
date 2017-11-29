@@ -238,30 +238,17 @@ func main() {
 		discoveryManager = discovery.NewManager(ctxDiscovery, log.With(logger, "component", "discovery manager"))
 		scrapeManager    = retrieval.NewScrapeManager(log.With(logger, "component", "scrape manager"), fanoutStorage)
 		queryEngine      = promql.NewEngine(fanoutStorage, &cfg.queryEngine)
-		ruleManager      = rules.NewManager(&rules.ManagerOptions{Appendable: fanoutStorage,
-			Notifier:    notifier,
-			QueryEngine: queryEngine,
+		ruleManager      = rules.NewManager(&rules.ManagerOptions{
+			Appendable:  fanoutStorage,
+			QueryFunc:   rules.EngineQueryFunc(queryEngine),
+			NotifyFunc:  sendAlerts(notifier, cfg.web.ExternalURL.String()),
 			Context:     ctxRule,
 			ExternalURL: cfg.web.ExternalURL,
 			Logger:      log.With(logger, "component", "rule manager"),
 		})
 	)
 
-<<<<<<< HEAD
-	ctx := context.Background()
-	ruleManager := rules.NewManager(&rules.ManagerOptions{
-		Appendable:  fanoutStorage,
-		QueryFunc:   rules.EngineQueryFunc(queryEngine),
-		NotifyFunc:  sendAlerts(notifier, cfg.web.ExternalURL.String()),
-		Context:     ctx,
-		ExternalURL: cfg.web.ExternalURL,
-		Logger:      log.With(logger, "component", "rule manager"),
-	})
-
-	cfg.web.Context = ctx
-=======
 	cfg.web.Context = ctxWeb
->>>>>>> 95b1dec3... scrape pool doesn't rely on context as Stop() needs to be blocking to prevent Scrape loops trying to write to a closed TSDB storage.
 	cfg.web.TSDB = localStorage.Get
 	cfg.web.Storage = fanoutStorage
 	cfg.web.QueryEngine = queryEngine
@@ -293,7 +280,7 @@ func main() {
 
 	reloaders := []func(cfg *config.Config) error{
 		remoteStorage.ApplyConfig,
-		targetManager.ApplyConfig,
+		discoveryManager.ApplyConfig,
 		webHandler.ApplyConfig,
 		notifier.ApplyConfig,
 		func(cfg *config.Config) error {
