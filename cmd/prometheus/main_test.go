@@ -102,9 +102,9 @@ Loop:
 		t.Errorf("prometheus didn't start in the specified timeout")
 		return
 	}
-	if err := prom.Process.Kill(); err == nil && !stoppedOk {
+	if err := prom.Process.Kill(); err == nil {
 		t.Errorf("prometheus didn't shutdown gracefully after sending the Interrupt signal")
-	} else if stoppedErr != nil {
+	} else if !stoppedOk && stoppedErr != nil {
 		t.Errorf("prometheus exited with an error:%v", stoppedErr)
 	}
 }
