@@ -849,7 +849,7 @@ func (c *LeveledCompactor) populateBlock(blocks []BlockReader, meta *BlockMeta, 
 
 		i++
 	}
-	if set.Err() != nil {
+	if err := set.Err(); err != nil {
 		return errors.Wrap(set.Err(), "iterate compaction set")
 	}
 
@@ -923,15 +923,21 @@ func (c *compactionSeriesSet) Next() bool {
 		c.c = chks
 	}
 
+	chksComplete := make([]chunks.Meta, 0, len(c.c))
+
 	for i := range c.c {
 		chk := &c.c[i]
 
 		chk.Chunk, err = c.chunks.Chunk(chk.Ref)
 		if err != nil {
-			c.err = errors.Wrapf(err, "chunk %d not found", chk.Ref)
-			return false
+			fmt.Println("skipping corrupted chunk", chk.Ref, "err", err)
+			continue
 		}
+
+		chksComplete = append(chksComplete, *chk)
 	}
+
+	c.c = chksComplete
 
 	return true
 }

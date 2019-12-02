@@ -15,6 +15,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -34,6 +35,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/prometheus/prometheus/pkg/labels"
 	"github.com/prometheus/prometheus/tsdb"
+	"github.com/prometheus/prometheus/tsdb/chunkenc"
 	"github.com/prometheus/prometheus/tsdb/chunks"
 	tsdb_errors "github.com/prometheus/prometheus/tsdb/errors"
 	kingpin "gopkg.in/alecthomas/kingpin.v2"
@@ -67,6 +69,9 @@ func execute() (err error) {
 		dumpPath             = dumpCmd.Arg("db path", "database path (default is "+defaultDBPath+")").Default(defaultDBPath).String()
 		dumpMinTime          = dumpCmd.Flag("min-time", "minimum timestamp to dump").Default(strconv.FormatInt(math.MinInt64, 10)).Int64()
 		dumpMaxTime          = dumpCmd.Flag("max-time", "maximum timestamp to dump").Default(strconv.FormatInt(math.MaxInt64, 10)).Int64()
+		repairCmd            = cli.Command("repair", "repair corrupted blocks by removing corrupted chunks")
+		repairInPath         = repairCmd.Flag("src", "source db path to scan (default is "+defaultDBPath+")").Default(defaultDBPath).String()
+		repairOutPath        = repairCmd.Flag("dst", "destination db path for the repaired blocks").String()
 	)
 
 	logger := log.NewLogfmtLogger(log.NewSyncWriter(os.Stderr))
@@ -136,6 +141,18 @@ func execute() (err error) {
 			err = merr.Err()
 		}()
 		return dumpSamples(db, *dumpMinTime, *dumpMaxTime)
+	case repairCmd.FullCommand():
+		db, err := tsdb.OpenDBReadOnly(*repairInPath, nil)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			merr.Add(err)
+			merr.Add(db.Close())
+			err = merr.Err()
+		}()
+		return repairDB(db, *repairOutPath, logger)
+
 	}
 	return nil
 }
@@ -650,6 +667,32 @@ func dumpSamples(db *tsdb.DBReadOnly, mint, maxt int64) (err error) {
 
 	if ss.Err() != nil {
 		return ss.Err()
+	}
+	return nil
+}
+func repairDB(db *tsdb.DBReadOnly, out string, logger log.Logger) (err error) {
+	compactor, err := tsdb.NewLeveledCompactor(context.Background(), nil, logger, tsdb.DefaultOptions.BlockRanges, chunkenc.NewPool())
+	if err != nil {
+		return err
+	}
+
+	err = os.MkdirAll(out, 0777)
+	if err != nil {
+		return err
+	}
+
+	blocks, err := db.Blocks()
+	if err != nil {
+		return err
+	}
+
+	for _, blockR := range blocks {
+		logger.Log("message", "starting rewriting block", "src", blockR.Meta().ULID, "dest", out)
+		ulid, err := compactor.Write(out, blockR, blockR.Meta().MinTime, blockR.Meta().MaxTime, nil)
+		if err != nil {
+			return err
+		}
+		logger.Log("message", "wrote new block", "ulid", ulid, "source", blockR.Meta().ULID)
 	}
 	return nil
 }
