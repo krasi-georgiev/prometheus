@@ -112,7 +112,7 @@ func (r *Rule) Validate() (errs []error) {
 
 	if r.Expr == "" {
 		errs = append(errs, errors.Errorf("field 'expr' must be set in rule"))
-	} else if _, err := promql.ParseExpr(r.Expr); err != nil {
+	} else if _, _, err := promql.ParseExpr(r.Expr); err != nil {
 		errs = append(errs, errors.Wrap(err, "could not parse expression"))
 	}
 	if r.Record != "" {

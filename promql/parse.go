@@ -38,6 +38,8 @@ type parser struct {
 
 	switchSymbols []ItemType
 
+	metrics map[string]struct{}
+
 	generatedParserResult interface{}
 }
 
@@ -54,15 +56,15 @@ func (e *ParseErr) Error() string {
 }
 
 // ParseExpr returns the expression parsed from the input.
-func ParseExpr(input string) (Expr, error) {
+func ParseExpr(input string) (Expr, map[string]struct{}, error) {
 	p := newParser(input)
 
 	expr, err := p.parseExpr()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	err = p.typecheck(expr)
-	return expr, err
+	return expr, p.metrics, err
 }
 
 // ParseMetric parses the input into a metric
@@ -93,7 +95,8 @@ func ParseMetricSelector(input string) (m []*labels.Matcher, err error) {
 // newParser returns a new parser.
 func newParser(input string) *parser {
 	p := &parser{
-		lex: Lex(input),
+		lex:     Lex(input),
+		metrics: make(map[string]struct{}),
 	}
 	return p
 }
@@ -594,6 +597,7 @@ func (p *parser) primaryExpr() Expr {
 		fallthrough // Else metric selector.
 
 	case t.Typ == METRIC_IDENTIFIER:
+		p.metrics[t.Val] = struct{}{}
 		return p.VectorSelector(t.Val)
 
 	case t.Typ.isAggregator():

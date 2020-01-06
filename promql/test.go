@@ -147,7 +147,7 @@ func (t *Test) parseEval(lines []string, i int) (int, *evalCmd, error) {
 		at   = parts[2]
 		expr = parts[3]
 	)
-	_, err := ParseExpr(expr)
+	_, _, err := ParseExpr(expr)
 	if err != nil {
 		if perr, ok := err.(*ParseErr); ok {
 			perr.Line = i + 1

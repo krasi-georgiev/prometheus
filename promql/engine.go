@@ -309,7 +309,7 @@ func NewEngine(opts EngineOpts) *Engine {
 
 // NewInstantQuery returns an evaluation query for the given expression at the given time.
 func (ng *Engine) NewInstantQuery(q storage.Queryable, qs string, ts time.Time) (Query, error) {
-	expr, err := ParseExpr(qs)
+	expr, _, err := ParseExpr(qs)
 	if err != nil {
 		return nil, err
 	}
@@ -322,7 +322,7 @@ func (ng *Engine) NewInstantQuery(q storage.Queryable, qs string, ts time.Time) 
 // NewRangeQuery returns an evaluation query for the given time range and with
 // the resolution set by the interval.
 func (ng *Engine) NewRangeQuery(q storage.Queryable, qs string, start, end time.Time, interval time.Duration) (Query, error) {
-	expr, err := ParseExpr(qs)
+	expr, _, err := ParseExpr(qs)
 	if err != nil {
 		return nil, err
 	}
