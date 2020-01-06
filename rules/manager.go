@@ -927,7 +927,7 @@ func (m *Manager) LoadGroups(
 
 			rules := make([]Rule, 0, len(rg.Rules))
 			for _, r := range rg.Rules {
-				expr, err := promql.ParseExpr(r.Expr)
+				expr, _, err := promql.ParseExpr(r.Expr)
 				if err != nil {
 					return nil, []error{errors.Wrap(err, fn)}
 				}
