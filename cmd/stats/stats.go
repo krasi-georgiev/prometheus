@@ -12,13 +12,13 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
 
 	routev1 "github.com/openshift/client-go/route/clientset/versioned/typed/route/v1"
 	"github.com/pkg/errors"
+	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/pkg/rulefmt"
 	"github.com/prometheus/prometheus/promql"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -36,12 +36,13 @@ import (
 )
 
 var (
-	cacheDirRules   = filepath.Join("..", "..", ".local", "cache", "rules")
-	cacheDirScrapes = filepath.Join("..", "..", ".local", "cache", "scrapes")
+	cacheDirRules           = filepath.Join("..", "..", ".local", "cache", "rules")
+	cacheDirScrapes         = filepath.Join("..", "..", ".local", "cache", "scrapes")
+	cacheDirScrapesFilename = filepath.Join(cacheDirScrapes, "scrapes.json")
 )
 
 func main() {
-	domainFilters := os.Args[1:]
+	log.SetFlags(log.Ltime | log.Lshortfile)
 
 	if err := os.MkdirAll(cacheDirRules, os.ModePerm); err != nil {
 		log.Fatal("create rules cache dir:", err)
@@ -50,7 +51,7 @@ func main() {
 		log.Fatal("create scrapes cache dir:", err)
 	}
 
-	config, err := clientcmd.BuildConfigFromFlags("", filepath.Join("..", "..", ".local", "kubeconfig.yml"))
+	config, err := clientcmd.BuildConfigFromFlags("", filepath.Join(os.Getenv("HOME"), ".kube", "config"))
 	if err != nil {
 		log.Fatal("k8s config file", err)
 	}
@@ -93,11 +94,6 @@ func main() {
 	sort.Strings(missing)
 	fmt.Println("\n>>>> MISSING METRICS count:", len(missing))
 	for _, v := range missing {
-		for _, filter := range domainFilters {
-			if !strings.HasPrefix(v, filter) {
-				continue
-			}
-		}
 		fmt.Println(v)
 	}
 
@@ -129,51 +125,64 @@ func promURL(host string) (string, error) {
 	return "https://prometheus-k8s-openshift-monitoring.apps." + host, nil
 }
 
-func getScrapedMetrics(kubeClient kubernetes.Interface, routeClient routev1.RouteV1Interface) (map[string]struct{}, error) {
-	// url, err := promURL(config.Host)
-	// if err != nil {
-	// 	log.Fatal("parsing Prom url", err)
-	// }
+func getScrapedMetrics(kubeClient kubernetes.Interface, routeClient routev1.RouteV1Interface) (scrapedMetrics map[string]struct{}, err error) {
+	var (
+		labels model.LabelValues
+	)
+	defer func() {
+		if err != nil {
+			err = nil
+			log.Println("reading the scrape cache file:", cacheDirScrapesFilename)
+			data, err := ioutil.ReadFile(cacheDirScrapesFilename)
+			if err != nil {
+				err = errors.Wrap(err, "reading scrape metrics cache file")
+				return
+			}
 
+			if err := json.Unmarshal(data, &labels); err != nil {
+				err = errors.Wrap(err, "unmarshal scrape cache file")
+				return
+			}
+		}
+		scrapedMetrics = make(map[string]struct{})
+		for _, l := range labels {
+			scrapedMetrics[string(l)] = struct{}{}
+		}
+	}()
 	cl1, err := createServiceAccount(kubeClient)
 	if err != nil {
-		return nil, err
+		log.Println("creating the service account err:", err)
+		return
 	}
 	defer cl1()
 
 	cl2, err := createClusterRoleBinding(kubeClient)
 	if err != nil {
-		return nil, err
+		log.Println("creating the cluster role binding err:", err)
+		return
 	}
 	defer cl2()
 
 	url, err := getPromURL(routeClient)
 	if err != nil {
-		return nil, err
+		log.Println("getting the Prom url err:", err)
+		return
 	}
 	secret, err := getSecret(kubeClient)
 	if err != nil {
-		return nil, err
+		log.Println("getting the Prom secret err:", err)
+		return
 	}
-
-	scrapedMetrics := make(map[string]struct{})
-	reg, err := regexp.Compile("[^a-zA-Z0-9]+")
-	if err != nil {
-		return nil, errors.Wrap(err, "regex for filename")
-	}
-	trBearer := transport.NewBearerAuthRoundTripper(secret, &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	})
-
-	filename := reg.ReplaceAllString(url, "") + ".json"
-	var data []byte
 
 	client, err := api.NewClient(api.Config{
-		Address:      url,
-		RoundTripper: trBearer,
+		Address: url,
+		RoundTripper: transport.NewBearerAuthRoundTripper(secret, &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}),
 	})
 	if err != nil {
-		return nil, errors.Wrap(err, "create prom api client")
+		log.Println("creating Prom client err:", err)
+		return
 	}
 
 	v1api := promV1.NewAPI(client)
@@ -185,34 +194,20 @@ func getScrapedMetrics(kubeClient kubernetes.Interface, routeClient routev1.Rout
 		log.Println("api call to get the prom labels returned warnings:", warn)
 	}
 	if err != nil {
-		log.Println("get scrape", "url:", url, "err:", err)
-		filePath := filepath.Join(cacheDirScrapes, filename)
-		log.Println("reading the scrape cache file:", filePath, "url:", url)
-		data, err = ioutil.ReadFile(filePath)
-		if err != nil {
-			return nil, errors.Wrap(err, "reading scrape metrics cache file")
-		}
-		err := json.Unmarshal(data, &labels)
-		if err != nil {
-			return nil, errors.Wrap(err, "unmarshal scrape cache file")
-		}
-	} else {
-		data, err := json.Marshal(labels)
-		if err != nil {
-			return nil, errors.Wrap(err, "marshal scrape labels")
-		}
-		err = ioutil.WriteFile(filepath.Join(cacheDirRules, filename), data, 0644)
-		if err != nil {
-			return nil, errors.Wrapf(err, "write scrape file url:%v", url)
-		}
-
+		log.Println("get the metric names err:", err)
+		return
 	}
 
-	for _, l := range labels {
-		scrapedMetrics[string(l)] = struct{}{}
+	data, err := json.Marshal(labels)
+	if err != nil {
+		log.Println("marshal metric labels err:", err)
+		return
 	}
 
-	return scrapedMetrics, nil
+	if err := ioutil.WriteFile(cacheDirScrapesFilename, data, 0644); err != nil {
+		log.Println(err, "write scrape cache file err:", url)
+	}
+	return
 }
 
 func getRules(clientset kubernetes.Interface) (map[string]struct{}, error) {
