@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -80,11 +81,25 @@ func main() {
 	fmt.Println("SCRAPES COUNT:", len(scrapedMetrics))
 	fmt.Println()
 
-	var allKeys []string
+	fmt.Println("HIGHEST CARDINALITY")
+	{
+		sortedCard := make([]int, 0, len(scrapedMetrics))
+		sortedCardKeys := make(map[int]string, len(scrapedMetrics))
+		for k, v := range scrapedMetrics {
+			sortedCard = append(sortedCard, v)
+			sortedCardKeys[v] = k
+		}
+		sort.Sort(sort.Reverse(sort.IntSlice(sortedCard)))
+		for _, v := range sortedCard[:30] {
+			fmt.Println(sortedCardKeys[v], v)
+		}
+	}
+
+	used := make(map[string]int)
 	var missing []string
 	for s := range rulesMetrics {
-		if _, ok := scrapedMetrics[s]; ok {
-			allKeys = append(allKeys, s)
+		if card, ok := scrapedMetrics[s]; ok {
+			used[s] = card
 			delete(scrapedMetrics, s)
 			continue
 		}
@@ -97,20 +112,25 @@ func main() {
 		fmt.Println(v)
 	}
 
-	sort.Strings(allKeys)
-	fmt.Println("\n>>>> USED METRICS count:", len(allKeys))
-	for _, v := range allKeys {
-		fmt.Println(v)
+	sorted := make([]string, 0, len(used))
+	for v := range used {
+		sorted = append(sorted, v)
 	}
 
-	allKeys = allKeys[:0]
-	for s := range scrapedMetrics {
-		allKeys = append(allKeys, s)
+	sort.Strings(sorted)
+	fmt.Println("\n>>>> USED METRICS count:", len(sorted))
+	for _, s := range sorted {
+		fmt.Println(s, used[s])
 	}
-	sort.Strings(allKeys)
-	fmt.Println("\n>>>> UNUSED METRICS count:", len(allKeys))
-	for _, v := range allKeys {
-		fmt.Println(v)
+
+	sorted = sorted[:0]
+	for s := range scrapedMetrics {
+		sorted = append(sorted, s)
+	}
+	sort.Strings(sorted)
+	fmt.Println("\n>>>> UNUSED METRICS count:", len(sorted))
+	for _, s := range sorted {
+		fmt.Println(s, scrapedMetrics[s])
 	}
 }
 
@@ -125,12 +145,15 @@ func promURL(host string) (string, error) {
 	return "https://prometheus-k8s-openshift-monitoring.apps." + host, nil
 }
 
-func getScrapedMetrics(kubeClient kubernetes.Interface, routeClient routev1.RouteV1Interface) (scrapedMetrics map[string]struct{}, err error) {
+func getScrapedMetrics(kubeClient kubernetes.Interface, routeClient routev1.RouteV1Interface) (scrapedMetrics map[string]int, err error) {
 	var (
-		labels model.LabelValues
+		series []model.LabelSet
 	)
 	defer func() {
 		if err != nil {
+			if !askForConfirmation("error reading the scrape metrics from the cluster, do you want to use the cache from the last run?") {
+				return
+			}
 			err = nil
 			log.Println("reading the scrape cache file:", cacheDirScrapesFilename)
 			data, err := ioutil.ReadFile(cacheDirScrapesFilename)
@@ -139,14 +162,18 @@ func getScrapedMetrics(kubeClient kubernetes.Interface, routeClient routev1.Rout
 				return
 			}
 
-			if err := json.Unmarshal(data, &labels); err != nil {
+			if err := json.Unmarshal(data, &series); err != nil {
 				err = errors.Wrap(err, "unmarshal scrape cache file")
 				return
 			}
 		}
-		scrapedMetrics = make(map[string]struct{})
-		for _, l := range labels {
-			scrapedMetrics[string(l)] = struct{}{}
+		scrapedMetrics = make(map[string]int)
+		for _, l := range series {
+			if _, ok := scrapedMetrics[string(l["__name__"])]; ok {
+				scrapedMetrics[string(l["__name__"])] = scrapedMetrics[string(l["__name__"])] + 1
+				continue
+			}
+			scrapedMetrics[string(l["__name__"])] = 1
 		}
 	}()
 	cl1, err := createServiceAccount(kubeClient)
@@ -189,18 +216,18 @@ func getScrapedMetrics(kubeClient kubernetes.Interface, routeClient routev1.Rout
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Second)
 	defer cancel()
 
-	labels, warn, err := v1api.LabelValues(ctx, "__name__")
+	series, warn, err := v1api.Series(ctx, []string{"{__name__!=''}"}, time.Unix(0, 0), time.Unix(999999999999, 0))
 	if warn != nil {
-		log.Println("api call to get the prom labels returned warnings:", warn)
+		log.Println("api call to get the prom series returned warnings:", warn)
 	}
 	if err != nil {
 		log.Println("get the metric names err:", err)
 		return
 	}
 
-	data, err := json.Marshal(labels)
+	data, err := json.Marshal(series)
 	if err != nil {
-		log.Println("marshal metric labels err:", err)
+		log.Println("marshal metric series err:", err)
 		return
 	}
 
@@ -215,6 +242,9 @@ func getRules(clientset kubernetes.Interface) (map[string]struct{}, error) {
 	configMaps, err := clientset.CoreV1().ConfigMaps("openshift-monitoring").List(metav1.ListOptions{})
 	if err != nil {
 		log.Println("get configmaps", err)
+		if !askForConfirmation("error reading the rules from the cluster, do you want to use the cache from the last run?") {
+			return nil, err
+		}
 		log.Println("reading the configmaps cache dir:", cacheDirRules)
 		err := filepath.Walk(cacheDirRules, func(path string, info os.FileInfo, err error) error {
 			if info.IsDir() {
@@ -346,3 +376,28 @@ func getSecret(kubeClient kubernetes.Interface) (string, error) {
 }
 
 type cleanUpFunc func() error
+
+// askForConfirmation uses Scanln to parse user input. A user must type in "yes" or "no" and
+// then press enter. It has fuzzy matching, so "y", "Y", "yes", "YES", and "Yes" all count as
+// confirmations. If the input is not recognized, it will ask again. The function does not return
+// until it gets a valid response from the user. Typically, you should use fmt to print out a question
+// before calling askForConfirmation. E.g. fmt.Println("WARNING: Are you sure? (yes/no)")
+func askForConfirmation(question string) bool {
+	reader := bufio.NewReader(os.Stdin)
+	for {
+		fmt.Printf("%s [y/n]: ", question)
+
+		response, err := reader.ReadString('\n')
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		response = strings.ToLower(strings.TrimSpace(response))
+
+		if response == "y" || response == "yes" {
+			return true
+		} else if response == "n" || response == "no" {
+			return false
+		}
+	}
+}
