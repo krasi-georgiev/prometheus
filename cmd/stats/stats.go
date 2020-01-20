@@ -78,7 +78,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println("SCRAPES COUNT:", len(scrapedMetrics))
+	fmt.Println("METRICS COUNT:", len(scrapedMetrics))
 	fmt.Println()
 
 	fmt.Println("HIGHEST CARDINALITY")
@@ -151,7 +151,7 @@ func getScrapedMetrics(kubeClient kubernetes.Interface, routeClient routev1.Rout
 	)
 	defer func() {
 		if err != nil {
-			if !askForConfirmation("error reading the scrape metrics from the cluster, do you want to use the cache from the last run?") {
+			if !confirm("error reading the scrape metrics from the cluster, do you want to use the cache from the last run?") {
 				return
 			}
 			err = nil
@@ -242,7 +242,7 @@ func getRules(clientset kubernetes.Interface) (map[string]struct{}, error) {
 	configMaps, err := clientset.CoreV1().ConfigMaps("openshift-monitoring").List(metav1.ListOptions{})
 	if err != nil {
 		log.Println("get configmaps", err)
-		if !askForConfirmation("error reading the rules from the cluster, do you want to use the cache from the last run?") {
+		if !confirm("error reading the rules from the cluster, do you want to use the cache from the last run?") {
 			return nil, err
 		}
 		log.Println("reading the configmaps cache dir:", cacheDirRules)
@@ -377,12 +377,12 @@ func getSecret(kubeClient kubernetes.Interface) (string, error) {
 
 type cleanUpFunc func() error
 
-// askForConfirmation uses Scanln to parse user input. A user must type in "yes" or "no" and
+// confirm uses Scanln to parse user input. A user must type in "yes" or "no" and
 // then press enter. It has fuzzy matching, so "y", "Y", "yes", "YES", and "Yes" all count as
 // confirmations. If the input is not recognized, it will ask again. The function does not return
 // until it gets a valid response from the user. Typically, you should use fmt to print out a question
-// before calling askForConfirmation. E.g. fmt.Println("WARNING: Are you sure? (yes/no)")
-func askForConfirmation(question string) bool {
+// before calling confirm. E.g. fmt.Println("WARNING: Are you sure? (yes/no)")
+func confirm(question string) bool {
 	reader := bufio.NewReader(os.Stdin)
 	for {
 		fmt.Printf("%s [y/n]: ", question)
