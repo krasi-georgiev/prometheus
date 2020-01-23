@@ -45,6 +45,12 @@ var (
 func main() {
 	log.SetFlags(log.Ltime | log.Lshortfile)
 
+	start := time.Now()
+	defer func() {
+		fmt.Println()
+		fmt.Println(">>>>>> Processing time", time.Since(start))
+	}()
+
 	if err := os.MkdirAll(cacheDirRules, os.ModePerm); err != nil {
 		log.Fatal("create rules cache dir:", err)
 	}
@@ -83,15 +89,9 @@ func main() {
 
 	fmt.Println("HIGHEST CARDINALITY")
 	{
-		sortedCard := make([]int, 0, len(scrapedMetrics))
-		sortedCardKeys := make(map[int]string, len(scrapedMetrics))
-		for k, v := range scrapedMetrics {
-			sortedCard = append(sortedCard, v)
-			sortedCardKeys[v] = k
-		}
-		sort.Sort(sort.Reverse(sort.IntSlice(sortedCard)))
-		for _, v := range sortedCard[:30] {
-			fmt.Println(sortedCardKeys[v], v)
+		for _, topCardName := range highestCardinality(scrapedMetrics) {
+			fmt.Println(topCardName, scrapedMetrics[topCardName])
+
 		}
 	}
 
@@ -169,11 +169,12 @@ func getScrapedMetrics(kubeClient kubernetes.Interface, routeClient routev1.Rout
 		}
 		scrapedMetrics = make(map[string]int)
 		for _, l := range series {
-			if _, ok := scrapedMetrics[string(l["__name__"])]; ok {
-				scrapedMetrics[string(l["__name__"])] = scrapedMetrics[string(l["__name__"])] + 1
+			key := string(l["__name__"])
+			if _, ok := scrapedMetrics[key]; ok {
+				scrapedMetrics[key] = scrapedMetrics[key] + 1
 				continue
 			}
-			scrapedMetrics[string(l["__name__"])] = 1
+			scrapedMetrics[key] = 1
 		}
 	}()
 	cl1, err := createServiceAccount(kubeClient)
@@ -235,6 +236,32 @@ func getScrapedMetrics(kubeClient kubernetes.Interface, routeClient routev1.Rout
 		log.Println(err, "write scrape cache file err:", url)
 	}
 	return
+}
+
+func highestCardinality(scrapedMetrics map[string]int) []string {
+	var (
+		topCard      = make([]int, 30, 30)
+		topCardNames = make([]string, 30, 30)
+	)
+	for name, card := range scrapedMetrics {
+		// Add to slice only when this card is larger than the smallest value in the array.
+		if card > topCard[len(topCard)-1] {
+			// Need to find where to insert this value to keep the order sorted.
+			for k, v := range topCard {
+				// The position is just after the  bigger element in the slice.
+				if card > v {
+					// Before adding to the card slice, shift all elements to the right.
+					topCard = append(topCard[:k+1], topCard[k:len(topCard)-1]...)
+					topCard[k] = card
+					// Before adding to the metric names slice, shift all elements to the right.
+					topCardNames = append(topCardNames[:k+1], topCardNames[k:len(topCardNames)-1]...)
+					topCardNames[k] = name
+					break
+				}
+			}
+		}
+	}
+	return topCardNames
 }
 
 func getRules(clientset kubernetes.Interface) (map[string]struct{}, error) {
@@ -385,7 +412,7 @@ type cleanUpFunc func() error
 func confirm(question string) bool {
 	reader := bufio.NewReader(os.Stdin)
 	for {
-		fmt.Printf("%s [y/n]: ", question)
+		fmt.Printf("%s [Y/n]: ", question)
 
 		response, err := reader.ReadString('\n')
 		if err != nil {
@@ -394,7 +421,7 @@ func confirm(question string) bool {
 
 		response = strings.ToLower(strings.TrimSpace(response))
 
-		if response == "y" || response == "yes" {
+		if response == "" || response == "y" || response == "yes" {
 			return true
 		} else if response == "n" || response == "no" {
 			return false
